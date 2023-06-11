@@ -74,9 +74,9 @@ func main() {
 	filteredProxies := filterProxies(*filterRegexConfig, proxies)
 	results := make([]Result, 0, len(filteredProxies))
 
-	format := "%s%-42s\t%-12s\t%-12s\033[0m\n"
+	format := "%s%-55s\t%-12s\t%-30s\t%-12s\t%-12s\033[0m\n"
 
-	fmt.Printf(format, "", "节点", "带宽", "延迟")
+	fmt.Printf(format, "", "节点", "类型", "地址", "带宽", "延迟")
 	for _, name := range filteredProxies {
 		proxy := proxies[name]
 		switch proxy.Type() {
@@ -106,7 +106,7 @@ func main() {
 		default:
 			log.Fatalln("Unsupported sort field: %s", *sortField)
 		}
-		fmt.Printf(format, "", "节点", "带宽", "延迟")
+		fmt.Printf(format, "", "节点", "类型", "地址", "带宽", "延迟")
 		for _, result := range results {
 			result.Printf(format)
 		}
@@ -175,6 +175,8 @@ func loadProxies() (map[string]C.Proxy, error) {
 
 type Result struct {
 	Name      string
+	Type      string
+	Host      string
 	Bandwidth float64
 	TTFB      time.Duration
 }
@@ -191,7 +193,7 @@ func (r *Result) Printf(format string) {
 	} else if r.Bandwidth > 1024*1024*10 {
 		color = green
 	}
-	fmt.Printf(format, color, formatName(r.Name), formatBandwidth(r.Bandwidth), formatMillseconds(r.TTFB))
+	fmt.Printf(format, color, formatName(r.Name), r.Type, r.Host, formatBandwidth(r.Bandwidth), formatMillseconds(r.TTFB))
 }
 
 func TestProxy(name string, proxy C.Proxy, downloadSize int, timeout time.Duration) *Result {
@@ -214,22 +216,22 @@ func TestProxy(name string, proxy C.Proxy, downloadSize int, timeout time.Durati
 	start := time.Now()
 	resp, err := client.Get(fmt.Sprintf("https://speed.cloudflare.com/__down?bytes=%d", downloadSize))
 	if err != nil {
-		return &Result{name, -1, -1}
+		return &Result{name, proxy.Type().String(), proxy.Addr(), -1, -1}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return &Result{name, -1, -1}
+		return &Result{name, proxy.Type().String(), proxy.Addr(), -1, -1}
 	}
 	ttfb := time.Since(start)
 
 	written, _ := io.Copy(io.Discard, resp.Body)
 	if written == 0 {
-		return &Result{name, -1, -1}
+		return &Result{name, proxy.Type().String(), proxy.Addr(), -1, -1}
 	}
 	downloadTime := time.Since(start) - ttfb
 	bandwidth := float64(written) / downloadTime.Seconds()
 
-	return &Result{name, bandwidth, ttfb}
+	return &Result{name, proxy.Type().String(), proxy.Addr(), bandwidth, ttfb}
 }
 
 var (
@@ -291,6 +293,7 @@ func writeToCSV(filePath string, results []Result) error {
 	for _, result := range results {
 		line := []string{
 			result.Name,
+			result.Type, result.Host,
 			fmt.Sprintf("%.2f", result.Bandwidth/1024/1024),
 			strconv.FormatInt(result.TTFB.Milliseconds(), 10),
 		}
