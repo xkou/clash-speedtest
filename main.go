@@ -26,11 +26,14 @@ import (
 var (
 	configPathConfig   = flag.String("c", "", "configuration file path, also support http(s) url")
 	filterRegexConfig  = flag.String("f", ".*", "filter proxies by name, use regexp")
+	outputProvider     = flag.String("p", "", "output provider to file")
 	downloadSizeConfig = flag.Int("size", 1024*1024*100, "download size for testing proxies")
 	timeoutConfig      = flag.Duration("timeout", time.Second*5, "timeout for testing proxies")
 	sortField          = flag.String("sort", "b", "sort field for testing proxies, b for bandwidth, t for TTFB")
 	output             = flag.String("output", "", "output result to csv file")
 )
+
+type RawProxyConf map[string]any
 
 type RawConfig struct {
 	Providers map[string]map[string]any `yaml:"proxy-providers"`
@@ -66,7 +69,7 @@ func main() {
 	C.SetHomeDir(os.TempDir())
 	C.SetConfig(*configPathConfig)
 
-	proxies, err := loadProxies()
+	proxies, rawproxies, err := loadProxies()
 	if err != nil {
 		log.Fatalln("Failed to load config: %s", err)
 	}
@@ -107,8 +110,21 @@ func main() {
 			log.Fatalln("Unsupported sort field: %s", *sortField)
 		}
 		fmt.Printf(format, "", "节点", "类型", "地址", "带宽", "延迟")
+
+		provds := RawConfig{Proxies: []map[string]any{}}
 		for _, result := range results {
+			if result.Bandwidth > 0 {
+				provds.Proxies = append(provds.Proxies, rawproxies[result.Name])
+			}
+
 			result.Printf(format)
+		}
+		if *outputProvider != "" {
+			bs, err := yaml.Marshal(provds)
+			if err != nil {
+				log.Fatalln("%s", err)
+			}
+			os.WriteFile(*outputProvider, bs, 0644)
 		}
 	}
 
@@ -129,48 +145,52 @@ func filterProxies(filter string, proxies map[string]C.Proxy) []string {
 	return filteredProxies
 }
 
-func loadProxies() (map[string]C.Proxy, error) {
+func loadProxies() (map[string]C.Proxy, map[string]RawProxyConf, error) {
 	buf, err := os.ReadFile(C.Path.Config())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rawCfg := &RawConfig{
 		Proxies: []map[string]any{},
 	}
 	if err := yaml.Unmarshal(buf, rawCfg); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	proxies := make(map[string]C.Proxy)
 	proxiesConfig := rawCfg.Proxies
 	providersConfig := rawCfg.Providers
 
+	rawproxies := map[string]RawProxyConf{}
+
 	for i, config := range proxiesConfig {
 		proxy, err := adapter.ParseProxy(config)
 		if err != nil {
-			return nil, fmt.Errorf("proxy %d: %w", i, err)
+			return nil, nil, fmt.Errorf("proxy %d: %w", i, err)
 		}
 
+		rawproxies[proxy.Name()] = config
+
 		if _, exist := proxies[proxy.Name()]; exist {
-			return nil, fmt.Errorf("proxy %s is the duplicate name", proxy.Name())
+			return nil, nil, fmt.Errorf("proxy %s is the duplicate name", proxy.Name())
 		}
 		proxies[proxy.Name()] = proxy
 	}
 	for name, config := range providersConfig {
 		if name == provider.ReservedName {
-			return nil, fmt.Errorf("can not defined a provider called `%s`", provider.ReservedName)
+			return nil, nil, fmt.Errorf("can not defined a provider called `%s`", provider.ReservedName)
 		}
 		pd, err := provider.ParseProxyProvider(name, config)
 		if err != nil {
-			return nil, fmt.Errorf("parse proxy provider %s error: %w", name, err)
+			return nil, nil, fmt.Errorf("parse proxy provider %s error: %w", name, err)
 		}
 		if err := pd.Initial(); err != nil {
-			return nil, fmt.Errorf("initial proxy provider %s error: %w", pd.Name(), err)
+			return nil, nil, fmt.Errorf("initial proxy provider %s error: %w", pd.Name(), err)
 		}
 		for _, proxy := range pd.Proxies() {
 			proxies[fmt.Sprintf("[%s] %s", name, proxy.Name())] = proxy
 		}
 	}
-	return proxies, nil
+	return proxies, rawproxies, nil
 }
 
 type Result struct {
