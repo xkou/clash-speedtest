@@ -27,7 +27,7 @@ var (
 	configPathConfig   = flag.String("c", "", "configuration file path, also support http(s) url")
 	filterRegexConfig  = flag.String("f", ".*", "filter proxies by name, use regexp")
 	outputProvider     = flag.String("p", "", "output provider to file")
-	downloadSizeConfig = flag.Int("size", 1024*1024*100, "download size for testing proxies")
+	downloadSizeConfig = flag.Int("size", 1024*1024*20, "download size for testing proxies")
 	timeoutConfig      = flag.Duration("timeout", time.Second*5, "timeout for testing proxies")
 	sortField          = flag.String("sort", "b", "sort field for testing proxies, b for bandwidth, t for TTFB")
 	output             = flag.String("output", "", "output result to csv file")
@@ -114,7 +114,13 @@ func main() {
 		provds := RawConfig{Proxies: []map[string]any{}}
 		for _, result := range results {
 			if result.Bandwidth > 0 {
-				provds.Proxies = append(provds.Proxies, rawproxies[result.Name])
+				m2 := RawProxyConf{}
+				for k, v := range rawproxies[result.Name] {
+					m2[k] = v
+				}
+				m2["name"] = "节点-" + formatBandwidth(result.Bandwidth)
+				provds.Proxies = append(provds.Proxies, m2)
+
 			}
 
 			result.Printf(format)
