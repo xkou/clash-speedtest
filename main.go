@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -31,6 +32,8 @@ var (
 	timeoutConfig      = flag.Duration("timeout", time.Second*5, "timeout for testing proxies")
 	sortField          = flag.String("sort", "b", "sort field for testing proxies, b for bandwidth, t for TTFB")
 	output             = flag.String("output", "", "output result to csv file")
+	geoAddr            = flag.String("l", "", "local geo service")
+	geoRemoteAddr      = flag.String("r", "", "remote geo service")
 )
 
 type RawProxyConf map[string]any
@@ -113,12 +116,21 @@ func main() {
 
 		provds := RawConfig{Proxies: []map[string]any{}}
 		for _, result := range results {
-			if result.Bandwidth > 0 {
+			if result.Bandwidth > 500*1024 {
 				m2 := RawProxyConf{}
 				for k, v := range rawproxies[result.Name] {
 					m2[k] = v
 				}
 				m2["name"] = "节点-" + formatBandwidth(result.Bandwidth)
+				if *geoAddr != "" {
+					host, _, _ := net.SplitHostPort(result.Host)
+					ips, _ := net.LookupIP(host)
+					countryCode := GetCountryCode(http.DefaultClient, *geoAddr, ips[0].String())
+					pr := proxies[result.Name]
+					proxyclient := HttpClientProxy(pr)
+					countryCode2 := GetCountryCode(&proxyclient, *geoRemoteAddr, "")
+					m2["name"] = countryCode + ".节点-" + countryCode2 + "-" + formatBandwidth(result.Bandwidth)
+				}
 				provds.Proxies = append(provds.Proxies, m2)
 
 			}
@@ -212,6 +224,32 @@ var (
 	green = "\033[32m"
 )
 
+type GeoCountryCode struct {
+	CountryCode string `json:"CountryCode"`
+	IP          string `json:"IP"`
+}
+
+func GetCountryCode(c *http.Client, url, ip string) string {
+	if ip != "" {
+		url = url + "?ip=" + ip
+	}
+	res, err := c.Get(url)
+	if err != nil {
+		return "+"
+	}
+	defer res.Body.Close()
+	bs, err := io.ReadAll(res.Body)
+	if err != nil {
+		panic(err)
+	}
+	geo := GeoCountryCode{}
+	err = json.Unmarshal(bs, &geo)
+	if err != nil {
+		panic(err)
+	}
+	return geo.CountryCode
+}
+
 func (r *Result) Printf(format string) {
 	color := ""
 	if r.Bandwidth < 1024*1024 {
@@ -222,9 +260,9 @@ func (r *Result) Printf(format string) {
 	fmt.Printf(format, color, formatName(r.Name), r.Type, r.Host, formatBandwidth(r.Bandwidth), formatMillseconds(r.TTFB))
 }
 
-func TestProxy(name string, proxy C.Proxy, downloadSize int, timeout time.Duration) *Result {
+func HttpClientProxy(proxy C.Proxy) http.Client {
 	client := http.Client{
-		Timeout: timeout,
+		Timeout: *timeoutConfig,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				host, port, err := net.SplitHostPort(addr)
@@ -238,6 +276,11 @@ func TestProxy(name string, proxy C.Proxy, downloadSize int, timeout time.Durati
 			},
 		},
 	}
+	return client
+}
+
+func TestProxy(name string, proxy C.Proxy, downloadSize int, timeout time.Duration) *Result {
+	client := HttpClientProxy(proxy)
 
 	start := time.Now()
 	resp, err := client.Get(fmt.Sprintf("https://speed.cloudflare.com/__down?bytes=%d", downloadSize))
